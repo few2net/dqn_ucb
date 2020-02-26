@@ -1,21 +1,20 @@
-import numpy as np
-import tensorflow as tf
 import os
 import time
 import random
-
+import cv2
 import argparse
+import numpy as np
+import tensorflow as tf
+
 from baselines.common import set_global_seeds, explained_variance
 from baselines.common.vec_env.subproc_vec_env import SubprocVecEnv
 from baselines.common.atari_wrappers import make_atari, wrap_deepmind
 
 from utils import *
-from baselines.common.atari_wrappers import wrap_deepmind
 
-import cv2
 
 class Model(object):
-    def __init__(self, num_actions, risk_constant, summary_writer, sess=None, multi_gpu=False, no_gpu=False):
+    def __init__(self, num_actions, risk_constant, sess=None, multi_gpu=False, no_gpu=False):
         if multi_gpu:
             device_1 = '/device:GPU:0'
             device_2 = '/device:GPU:1'
@@ -31,12 +30,14 @@ class Model(object):
             with tf.device(device_1):
                 # make it int32 and divide by 255.
                 self.x = x = tf.placeholder(tf.uint8, [None, 84, 84, 4], name="input")
-                self.batch_size = tf.shape(x)[0]
+                self.batch_size = tf.shape(x)[0]  # = (nenvs) if perform action || = (args.bs) if train replay buffer
                 x = tf.cast(x, tf.float32)/255.
+
                 # convolution layer
                 x = tf.nn.relu( conv2d(x, 32, "l1", [8,8], [4,4]) )
                 x = tf.nn.relu( conv2d(x, 64, "l2", [4,4], [2,2]) )
                 conv_out = tf.nn.relu( conv2d(x, 64, "l3", [3,3], [1,1]) )
+
                 # fully connected layer
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden", normalized_columns_initializer(1.0)))
                 self.q_values = linear(x, num_actions, "q_out", normalized_columns_initializer(1.0))
@@ -56,21 +57,24 @@ class Model(object):
             with tf.device(device_2):
                 self.x_target = x = tf.placeholder(tf.uint8, [None, 84, 84, 4], name="input_target")
                 x = tf.cast(x, tf.float32)/255.
+
                 # convolution layer
                 x = tf.nn.relu( conv2d(x, 32, "l1", [8,8], [4,4]) )
                 x = tf.nn.relu( conv2d(x, 64, "l2", [4,4], [2,2]) )
                 conv_out = tf.nn.relu( conv2d(x, 64, "l3", [3,3], [1,1]) )
+
                 # fully connected layer
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden", normalized_columns_initializer(1.0)))
                 self.q_values_target = linear(x, num_actions, "q_out", normalized_columns_initializer(1.0))
+
                 # second moment head
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden2", normalized_columns_initializer(1.0)))
                 self.m_values_target = linear(x, num_actions, "m_out", normalized_columns_initializer(1.0), bias_init=1.0)
                 self.q_variance_target = tf.nn.relu(self.m_values_target - self.q_values_target * self.q_values_target)
-                 # utility value
+
+                # utility value
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden3", normalized_columns_initializer(1.0)))
                 self.u_values_target = linear(x, num_actions, "u_out", normalized_columns_initializer(1.0), bias_init=1.0)
-
 
             self.var_list_target = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, tf.get_variable_scope().name)
 
@@ -81,10 +85,10 @@ class Model(object):
 
         # act greedily with respect to the utility
         # add small random action to avoid stranded behaviour
-        #eps = 0.01 #was 0.01
-        #self.eps = eps = tf.placeholder(tf.float32, [1])
+        # eps = 0.01 #was 0.01
+        # self.eps = eps = tf.placeholder(tf.float32, [1])
         eps = 0.01
-        deterministic_actions = tf.argmax(self.u_values, axis=1) # greedy
+        deterministic_actions = tf.argmax(self.u_values, axis=1)  # greedy
         random_actions = tf.random_uniform(tf.stack([self.batch_size]), minval=0, maxval=num_actions, dtype=tf.int64)
         chose_random = tf.random_uniform(tf.stack([self.batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps
         self.actions = tf.where(chose_random, random_actions, deterministic_actions)
@@ -110,7 +114,7 @@ class Model(object):
         q_tp1_best_masked = (1.0 - self.done_mask) * q_tp1_best
 
         # compute RHS of bellman equation
-        gamma = 0.995 # was 0.99
+        gamma = 0.995  # was 0.99
         q_t_selected_target = self.rewards_t + gamma * q_tp1_best_masked
 
         # compute error
@@ -138,8 +142,10 @@ class Model(object):
         m_t_selected_target = self.rewards_t * self.rewards_t  + \
                               2*gamma* self.rewards_t * q_tp1_best_masked +\
                               gamma*gamma * m_tp1_best_masked
-        # compute eror
+
+        # compute error
         m_td_error = m_t_selected - tf.stop_gradient(m_t_selected_target)
+
         # huber loss
         m_errors = tf.where(tf.abs(m_td_error) < delta,
                           tf.square(m_td_error) * 0.5,
@@ -169,7 +175,7 @@ class Model(object):
 
         ###################################################################
 
-        lr = 0.0001 #1.0e-4
+        lr = 0.0001  # 1.0e-4
         optimizer = tf.train.AdamOptimizer(learning_rate=lr)
         self.optimize_expr = optimizer.minimize(errors + m_errors + u_errors)
 
@@ -189,7 +195,7 @@ class Model(object):
         # sample an action
         return self.sess.run(self.actions,
                         feed_dict={self.x : obs})
-                        #feed_dict={self.x : obs, self.eps : epsilon})
+                        # feed_dict={self.x : obs, self.eps : epsilon})
 
     def train(self, obses, actions, rewards, obses_tp1, dones):
         # train
@@ -205,19 +211,18 @@ class Model(object):
         return self.sess.run(self.sync)
 
 
-
 class ReplayBuffer(object):
     def __init__(self, size):
         self._storage = []
-        self._maxsize = size
+        self._maxsize = size  # 200,000
         self._next_idx = 0
 
     def __len__(self):
         return len(self._storage)
 
     def add(self, obs_t, action, reward, obs_tp1, done):
+        # oldest data will be replaced
         data = (obs_t, action, reward, obs_tp1, done)
-
         if self._next_idx >= len(self._storage):
             self._storage.append(data)
         else:
@@ -257,7 +262,6 @@ class LinearSchedule(object):
 
 
 class DQN:
-
     def __init__(self,
               env,
               model,
@@ -274,7 +278,7 @@ class DQN:
               sess=None,
               saver=None,
               ):
-        #
+
         self.env = env
         self.nenvs = env.num_envs
         self.model = model
@@ -309,8 +313,6 @@ class DQN:
         self.sess = sess
 
     def update_obs(self, obs):
-        # Do frame-stacking here instead of the FrameStack wrapper to reduce
-        # IPC overhead
         self.obs = np.roll(self.obs, shift=-1, axis=3)
         self.obs[:, :, :, -1] = obs[:, :, :, 0]
 
@@ -326,13 +328,14 @@ class DQN:
         episode_length = 0.0
 
         for t in range( self.max_timesteps//self.nenvs + 1):
-
+            print("step : %d"%t)
             # choose actions
             # actions = self.model.act(self.obs, [self.exploration.value(int(t*self.nenvs))])
             actions = self.model.act(self.obs)
 
             # act on env
             obs, rewards, dones, _ = self.env.step(actions)
+
             # clip rewards
             clip_rewards = np.sign(rewards)
 
@@ -366,7 +369,6 @@ class DQN:
                 # Update target network periodically.
                 self.model.update_target()
 
-
             # collect summary
             episode_reward += rewards[0]
             episode_clip_reward += clip_rewards[0]
@@ -395,7 +397,6 @@ class DQN:
                 episode_clip_reward = 0.0
                 episode_length = 0
 
-
             if t == self.max_timesteps//(2*self.nenvs):
                 # save at half the training time
                 self.saver.save(self.sess, self.logdir + "/half/half_model.ckpt")
@@ -409,68 +410,78 @@ class DQN:
                 cv2.imshow('img', vis)
                 cv2.waitKey(2)
 
-        #save final model
+        # save final model
         self.saver.save(self.sess, self.logdir + "/final/final_model.ckpt")
         print('Save final model')
 
-def main():
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--bs', help='batch size', type=int, default=512)
+    parser.add_argument('--c', help='risk constant', type=float, default=0.3)
     parser.add_argument('--env', help='environment ID', default='MontezumaRevengeNoFrameskip-v4')
-    parser.add_argument('--seed', help='RNG seed', type=int, default=2)
-    parser.add_argument('--num-timesteps', type=int, default=int(100e6))
-    parser.add_argument('--num-workers', type=int, default=12)
-    parser.add_argument('--logdir', help='tb directory', default='./experiments')
-    parser.add_argument('--visualise', default=False, action='store_true')
-    parser.add_argument('--gpu_id', default="0")
-    parser.add_argument('--multi_gpu', default=False, action='store_true')
-    parser.add_argument('--c', type=float, default=0.3)
-    parser.add_argument('--bs',type=int, default=512)
+    parser.add_argument('--gpu_id', help='gpu device ID', default="0")
+    parser.add_argument('--log_dir', help='experiment directory', default='./experiments')
+    parser.add_argument('--multi_gpu', help='use multiple GPUs', action='store_true')
+    parser.add_argument('--num_workers', help='number of workers', type=int, default=12)
+    parser.add_argument('--seed', help='random seed', type=int, default=0)
+    parser.add_argument('--time_steps', help='max time step for training', type=int, default=int(100e6))
+    parser.add_argument('--visualise', help='show game screen', action='store_true')
     args = parser.parse_args()
+    print("Initialise environment...")
 
-    os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"]= str(args.gpu_id)
+    # GPUs setting
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
 
-    experiment_name = args.env + '/v6/c_' + str(args.c) + '/seed_'+ str(args.seed) + '/bs_' + str(args.bs)
-    logdir = os.path.join(args.logdir, experiment_name)
+    # Experiment results
+    experiment_name = args.env + '/c_' + str(args.c) + '/bs_' + str(args.bs) + '/seed_' + str(args.seed)
+    log_dir = os.path.join(args.log_dir, experiment_name)
 
+    # Create OpenNI atari-py function
     def make_env(rank):
         def _thunk():
             env = make_atari(args.env)
             env.seed(args.seed + rank)
             return wrap_deepmind(env, episode_life=False, clip_rewards=False)
         return _thunk
+
+    # Create environments
     set_global_seeds(args.seed)
     env = SubprocVecEnv([make_env(i) for i in range(args.num_workers)])
 
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth=True
+    # Start tf session
+    print("Starting session...")
     with tf.Session(config=config) as sess:
-
-        summary_writer = tf.summary.FileWriter(logdir)
-        model = Model(env.action_space.n,
+        # Create neural network models
+        model = Model(num_actions=env.action_space.n,  # 18 actions for atari
                       risk_constant=args.c,
-                      summary_writer=summary_writer,
                       sess=sess,
                       multi_gpu=args.multi_gpu)
-        saver = tf.train.Saver()
 
+        # Start training
+        summary_writer = tf.summary.FileWriter(log_dir)
+        saver = tf.train.Saver()
         dqn = DQN(env,
-              model,
-              summary_writer,
-              batch_size=args.bs,
-              max_timesteps=100010000,
-              train_freq=4,
-              learning_starts=10000,
-              target_network_update_freq=2000,
-              buffer_size=200000,
-              nstack=4,
-              visualise=args.visualise,
-              logdir=logdir,
-              sess=sess,
-              saver=saver)
+                  model,
+                  summary_writer,
+                  batch_size=args.bs,
+                  max_timesteps=args.time_steps,
+                  train_freq=4,
+                  learning_starts=10000,
+                  target_network_update_freq=2000,
+                  buffer_size=200000,
+                  nstack=4,
+                  visualise=args.visualise,
+                  logdir=log_dir,
+                  sess=sess,
+                  saver=saver)
+
+        print("Start!")
+        print("========================================================")
         dqn.learn()
 
     env.close()
-
-if __name__ == '__main__':
-    main()
