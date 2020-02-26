@@ -1,3 +1,10 @@
+"""
+    This is dqn which has Q and D estimator.
+    In this version, we define death reward equal 1.0 and take it to every time steps.
+    If the agent can collect more death reward, it means more alive time.
+    The agent must choose the action that give the greatest D-value.
+"""
+
 import os
 import time
 import random
@@ -14,7 +21,7 @@ from utils import *
 
 
 class Model(object):
-    def __init__(self, num_actions, risk_constant, sess=None, multi_gpu=False, no_gpu=False):
+    def __init__(self, num_actions, death_constant, risk_constant, sess=None, multi_gpu=False, no_gpu=False):
         if multi_gpu:
             device_1 = '/device:GPU:0'
             device_2 = '/device:GPU:1'
@@ -42,10 +49,9 @@ class Model(object):
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden", normalized_columns_initializer(1.0)))
                 self.q_values = linear(x, num_actions, "q_out", normalized_columns_initializer(1.0))
 
-                # second moment head
+                # death predictor
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden2", normalized_columns_initializer(1.0)))
-                self.m_values = linear(x, num_actions, "m_out", normalized_columns_initializer(1.0), bias_init=1.0)
-                self.q_variance = tf.nn.relu(self.m_values - self.q_values * self.q_values)
+                self.d_values = linear(x, num_actions, "d_out", normalized_columns_initializer(1.0))
 
                 # utility value
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden3", normalized_columns_initializer(1.0)))
@@ -67,10 +73,9 @@ class Model(object):
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden", normalized_columns_initializer(1.0)))
                 self.q_values_target = linear(x, num_actions, "q_out", normalized_columns_initializer(1.0))
 
-                # second moment head
+                # death predictor
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden2", normalized_columns_initializer(1.0)))
-                self.m_values_target = linear(x, num_actions, "m_out", normalized_columns_initializer(1.0), bias_init=1.0)
-                self.q_variance_target = tf.nn.relu(self.m_values_target - self.q_values_target * self.q_values_target)
+                self.d_values_target = linear(x, num_actions, "d_out", normalized_columns_initializer(1.0))
 
                 # utility value
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden3", normalized_columns_initializer(1.0)))
@@ -129,40 +134,38 @@ class Model(object):
         errors = tf.reduce_mean(errors)
 
         ##################################################################
-        # This section compute second-order value target and error
+        # This section compute Death estimation
         ###################################################################
 
-        m_t_selected = tf.reduce_sum(self.m_values * tf.one_hot(self.actions_t, num_actions), 1)
-        m_tp1_best = tf.reduce_sum(
-                tf.one_hot(tp1_best_actions, num_actions) * self.m_values_target,
-                axis=1)
-        m_tp1_best_masked = (1.0 - self.done_mask) * m_tp1_best
+        # q scores for actions, we know were selected
+        d_t_selected = tf.reduce_sum(self.d_values * tf.one_hot(self.actions_t, num_actions), 1)
+        # target
+        d_target = self.d_values_target
 
-        # compute RHS of 2nd moment bellman equation
-        m_t_selected_target = self.rewards_t * self.rewards_t  + \
-                              2*gamma* self.rewards_t * q_tp1_best_masked +\
-                              gamma*gamma * m_tp1_best_masked
+        d_tp1_best = tf.reduce_sum(d_target * tf.one_hot(tp1_best_actions, num_actions), 1)
+        d_tp1_best_masked = (1.0 - self.done_mask) * d_tp1_best
+
+        # compute RHS of bellman equation
+        gamma = 0.995  # was 0.99
+        d_t_selected_target = 1 + gamma * d_tp1_best_masked
 
         # compute error
-        m_td_error = m_t_selected - tf.stop_gradient(m_t_selected_target)
+        d_td_error = d_t_selected - tf.stop_gradient(d_t_selected_target)
 
         # huber loss
-        m_errors = tf.where(tf.abs(m_td_error) < delta,
-                          tf.square(m_td_error) * 0.5,
-                          delta * (tf.abs(m_td_error) - 0.5 * delta))
+        delta = 1.0
+        d_errors = tf.where(tf.abs(d_td_error) < delta,
+                          tf.square(d_td_error) * 0.5,
+                          delta * (tf.abs(d_td_error) - 0.5 * delta))
 
-        m_errors = tf.reduce_mean(m_errors)
+        d_errors = tf.reduce_mean(d_errors)
 
         ####################################################################
         # This section compute utility value target and error
         ####################################################################
-        c = risk_constant
+        b = death_constant  # death constant
         u_t_selected = tf.reduce_sum(self.u_values * tf.one_hot(self.actions_t, num_actions), 1)
-        q_var_tp1_best = tf.reduce_sum(
-                self.q_variance_target * tf.one_hot(tp1_best_actions, num_actions), 1)
-        q_var_tp1_best_masked = (1.0 - self.done_mask) * q_var_tp1_best
-        u_t_selected_target = self.rewards_t + gamma * q_tp1_best_masked \
-                              + c * gamma * gamma * q_var_tp1_best_masked
+        u_t_selected_target = q_t_selected_target + (b * d_t_selected_target)
 
         # compute error
         u_td_error = u_t_selected - tf.stop_gradient(u_t_selected_target)
@@ -177,17 +180,16 @@ class Model(object):
 
         lr = 0.0001  # 1.0e-4
         optimizer = tf.train.AdamOptimizer(learning_rate=lr)
-        self.optimize_expr = optimizer.minimize(errors + m_errors + u_errors)
+        self.optimize_expr = optimizer.minimize(errors + d_errors + u_errors)
 
         self.sess = sess
         tf.global_variables_initializer().run(session=self.sess)
 
         tf.summary.scalar("model/q_loss", errors)
-        tf.summary.scalar("model/m_loss", m_errors)
+        tf.summary.scalar("model/d_loss", d_errors)
         tf.summary.scalar("model/u_loss", u_errors)
         tf.summary.scalar("model/mean_q_values", tf.reduce_mean(q_t_selected))
-        tf.summary.scalar("model/mean_m_values", tf.reduce_mean(m_t_selected))
-        tf.summary.scalar("model/mean_variance", tf.reduce_mean(self.q_variance))
+        tf.summary.scalar("model/mean_d_values", tf.reduce_mean(d_t_selected))
         tf.summary.scalar("model/mean_u_values", tf.reduce_mean(u_t_selected))
         self.summary_op = tf.summary.merge_all()
 
@@ -415,6 +417,7 @@ class DQN:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--b', help='death constant', type=float, default=1)
     parser.add_argument('--bs', help='batch size', type=int, default=512)
     parser.add_argument('--c', help='risk constant', type=float, default=0.3)
     parser.add_argument('--env', help='environment ID', default='MontezumaRevengeNoFrameskip-v4')
@@ -437,7 +440,7 @@ if __name__ == '__main__':
 
     # Experiment results
     filename = os.path.basename(__file__)[:-3]
-    experiment_name = filename + "/" + args.env + '/c_' + str(args.c) + '/bs_' + str(args.bs) + '/seed_' + str(args.seed)
+    experiment_name = filename + "/" + args.env + '/b_' + str(args.b) + '/bs_' + str(args.bs) + '/seed_' + str(args.seed)
     log_dir = os.path.join(args.log_dir, experiment_name)
 
     # Create OpenNI atari-py function
@@ -457,6 +460,7 @@ if __name__ == '__main__':
     with tf.Session(config=config) as sess:
         # Create neural network models
         model = Model(num_actions=env.action_space.n,  # 18 actions for atari
+                      death_constant=args.b,
                       risk_constant=args.c,
                       sess=sess,
                       multi_gpu=args.multi_gpu)
