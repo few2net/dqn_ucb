@@ -55,7 +55,7 @@ class Model(object):
 
                 # utility value
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden3", normalized_columns_initializer(1.0)))
-                self.u_values = linear(x, num_actions, "u_out", normalized_columns_initializer(1.0), bias_init=1.0)
+                self.u_values = linear(x, num_actions, "u_out", normalized_columns_initializer(1.0))
 
             self.var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, tf.get_variable_scope().name)
 
@@ -79,7 +79,7 @@ class Model(object):
 
                 # utility value
                 x = tf.nn.relu(linear(flatten(conv_out), 512, "hidden3", normalized_columns_initializer(1.0)))
-                self.u_values_target = linear(x, num_actions, "u_out", normalized_columns_initializer(1.0), bias_init=1.0)
+                self.u_values_target = linear(x, num_actions, "u_out", normalized_columns_initializer(1.0))
 
             self.var_list_target = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, tf.get_variable_scope().name)
 
@@ -90,9 +90,9 @@ class Model(object):
 
         # act greedily with respect to the utility
         # add small random action to avoid stranded behaviour
-        # eps = 0.01 #was 0.01
-        # self.eps = eps = tf.placeholder(tf.float32, [1])
-        eps = 0.01
+
+        self.eps = eps = tf.placeholder(tf.float32, [1])
+        # eps = 0.01
         deterministic_actions = tf.argmax(self.u_values, axis=1)  # greedy
         random_actions = tf.random_uniform(tf.stack([self.batch_size]), minval=0, maxval=num_actions, dtype=tf.int64)
         chose_random = tf.random_uniform(tf.stack([self.batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps
@@ -193,11 +193,12 @@ class Model(object):
         tf.summary.scalar("model/mean_u_values", tf.reduce_mean(u_t_selected))
         self.summary_op = tf.summary.merge_all()
 
-    def act(self, obs):
+    def act(self, obs, epsilon):
         # sample an action
         return self.sess.run(self.actions,
-                        feed_dict={self.x : obs})
-                        # feed_dict={self.x : obs, self.eps : epsilon})
+                             feed_dict={self.x: obs, self.eps: epsilon})
+                             # feed_dict={self.x : obs})
+
 
     def train(self, obses, actions, rewards, obses_tp1, dones):
         # train
@@ -290,10 +291,10 @@ class DQN:
         self.replay_buffer = ReplayBuffer(buffer_size)
 
         # Create the schedule for exploration starting from 1.
-        #exploration_fraction = 0.1
-        #self.exploration = LinearSchedule(schedule_timesteps=int(exploration_fraction * max_timesteps),
-        #                             initial_p=1.0,
-        #                             final_p=0.01)
+        exploration_fraction = 0.1
+        self.exploration = LinearSchedule(schedule_timesteps=int(exploration_fraction * max_timesteps),
+                                    initial_p=1.0,
+                                    final_p=0.01)
 
         # Initialise observation
         self.obs = np.zeros((self.nenvs, nh, nw, nstack), dtype=np.uint8)
@@ -331,11 +332,19 @@ class DQN:
 
         for t in range( self.max_timesteps//self.nenvs + 1):
             # choose actions
-            # actions = self.model.act(self.obs, [self.exploration.value(int(t*self.nenvs))])
-            actions = self.model.act(self.obs)
+            actions = self.model.act(self.obs, [self.exploration.value(int(t*self.nenvs))])
+            # actions = self.model.act(self.obs)
 
-            # act on env
-            obs, rewards, dones, _ = self.env.step(actions)
+            try:
+                # act on env
+                obs, rewards, dones, _ = self.env.step(actions)
+            except Exception as e:
+                print(e)
+                print("error at step %d"%t)
+                print("=====actions=====")
+                print("shape: %s"%actions.shape)
+                print(actions)
+                break
 
             # clip rewards
             clip_rewards = np.sign(rewards)
@@ -377,6 +386,7 @@ class DQN:
 
             # Report summary
             if dones[0]:
+                print("done : %d"%t)
                 nseconds = time.time()-self.tstart
                 fps = int((t*self.nenvs)/nseconds)
                 # summary
@@ -488,3 +498,5 @@ if __name__ == '__main__':
         dqn.learn()
 
     env.close()
+    print("========================================================")
+    print("env closed!")
