@@ -2,7 +2,9 @@
     This is dqn which has Q and D estimator.
     In this version, we define death reward equal 1.0 and take it to every time steps.
     If the agent can collect more death reward, it means more alive time.
-    The agent must choose the action that give the greatest D-value.
+    The agent must choose the action that provides the greatest U-value.
+    where
+            U   =   Q + bD              ; b is constant
 """
 
 import os
@@ -138,7 +140,7 @@ class Model(object):
         ###################################################################
 
         # q scores for actions, we know were selected
-        d_t_selected = tf.reduce_sum(self.d_values * tf.one_hot(self.actions_t, num_actions), 1)
+        self.d_t_selected = tf.reduce_sum(self.d_values * tf.one_hot(self.actions_t, num_actions), 1)
         # target
         d_target = self.d_values_target
 
@@ -150,7 +152,7 @@ class Model(object):
         d_t_selected_target = 1 + gamma * d_tp1_best_masked
 
         # compute error
-        d_td_error = d_t_selected - tf.stop_gradient(d_t_selected_target)
+        d_td_error = self.d_t_selected - tf.stop_gradient(d_t_selected_target)
 
         # huber loss
         delta = 1.0
@@ -189,7 +191,7 @@ class Model(object):
         tf.summary.scalar("model/d_loss", d_errors)
         tf.summary.scalar("model/u_loss", u_errors)
         tf.summary.scalar("model/mean_q_values", tf.reduce_mean(q_t_selected))
-        tf.summary.scalar("model/mean_d_values", tf.reduce_mean(d_t_selected))
+        tf.summary.scalar("model/mean_d_values", tf.reduce_mean(self.d_t_selected))
         tf.summary.scalar("model/mean_u_values", tf.reduce_mean(u_t_selected))
         self.summary_op = tf.summary.merge_all()
 
@@ -335,16 +337,8 @@ class DQN:
             actions = self.model.act(self.obs, [self.exploration.value(int(t*self.nenvs))])
             # actions = self.model.act(self.obs)
 
-            try:
-                # act on env
-                obs, rewards, dones, _ = self.env.step(actions)
-            except Exception as e:
-                print(e)
-                print("error at step %d"%t)
-                print("=====actions=====")
-                print("shape: %s"%actions.shape)
-                print(actions)
-                break
+            # act on env
+            obs, rewards, dones, _ = self.env.step(actions)
 
             # clip rewards
             clip_rewards = np.sign(rewards)
