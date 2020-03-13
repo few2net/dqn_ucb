@@ -11,7 +11,7 @@ import cv2
 from baselines.common.atari_wrappers import make_atari, wrap_deepmind
 
 # Select which Model to use
-from dqn_QD_v2_2 import Model
+from dqn_QMD_v1 import Model
 
 import matplotlib.pyplot as plt
 
@@ -36,7 +36,7 @@ def realtime_plot(step, d_value):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('dir', help='model directory')
-    parser.add_argument('--b', help='death constant', type=float, default=0)
+    parser.add_argument('--b', help='death constant', type=float, default=1)
     parser.add_argument('--c', help='risk constant', type=float, default=0)
     parser.add_argument('--env', help='environment ID', default='MontezumaRevengeNoFrameskip-v4')
     parser.add_argument('--gpu_id', help='gpu device ID', default="0")
@@ -48,7 +48,7 @@ if __name__ == "__main__":
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
 
-    name = "half_model.ckpt"
+    name = "final_model.ckpt"
     path = os.path.join(args.dir, name)
     file = open(args.dir + "result.txt", 'w')
 
@@ -87,27 +87,21 @@ if __name__ == "__main__":
 
             while True:
                 # choose actions
-                # action = model.act(current_ob, [0.1])
-                action = model.act(current_ob, [0])
+                action = model.act(current_ob)
+                # action = model.act(current_ob, [0])
                 ob, reward, done, _ = env.step(action)
-                print("step %d: %s"%(t,action))
 
-                next_ob = np.roll(next_ob, shift=-1, axis=3)
-                next_ob[0, :, :, -1] = ob[:, :, 0]
-
-                # print("d_target")
-                # print("==========")
-                d_value = sess.run(model.d_t_selected, feed_dict={model.x: current_ob,
-                                                                     model.actions_t: action,
-                                                                     model.rewards_t: [reward],
-                                                                     model.x_target: next_ob,
-                                                                     model.done_mask: [done]})
-
-
-                # print(d_value[0])
-                # print("==========")
                 # visualisation for debugging process
                 if args.visualise:
+                    next_ob = np.roll(next_ob, shift=-1, axis=3)
+                    next_ob[0, :, :, -1] = ob[:, :, 0]
+
+                    print("step %d: %s" % (t, action))
+                    d_value = sess.run(model.d_t_selected, feed_dict={model.x: current_ob,
+                                                                      model.actions_t: action,
+                                                                      model.rewards_t: [reward],
+                                                                      model.x_target: next_ob,
+                                                                      model.done_mask: [done]})
                     # realtime plot
                     realtime_plot(t, d_value[0])
                     # Limit x and y lists to 20 items
@@ -122,7 +116,6 @@ if __name__ == "__main__":
                 current_ob = np.roll(current_ob, shift=-1, axis=3)
                 current_ob[0, :, :, -1] = ob[:, :, 0]
                 t += 1
-
 
                 if done:
                     env.reset()
